@@ -8,6 +8,24 @@ an approval policy you control.
 
 Requires Rust 1.85 or newer. CI currently checks Linux, macOS, and Windows.
 
+### One-command installation
+
+Linux x86_64 and macOS Apple Silicon users can install the latest release with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/britonmearsty/hi/main/scripts/install.sh | sh
+```
+
+On Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/britonmearsty/hi/main/scripts/install.ps1 | iex
+```
+
+Then run `hi`. The first run opens the provider setup guide automatically. If
+no release exists yet, the Unix installer falls back to building from source
+with Cargo.
+
 ```bash
 git clone <repository-url>
 cd hi
