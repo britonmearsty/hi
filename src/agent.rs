@@ -154,13 +154,7 @@ async fn run_turn(
         let loader = tokio::spawn(crate::ui::loader());
         let mut streamed_text = String::new();
         let mut on_text = |text: String| streamed_text.push_str(&text);
-        let context: Vec<Message> = if messages.len() > 41 {
-            let mut trimmed = vec![messages[0].clone()];
-            trimmed.extend(messages[messages.len() - 40..].iter().cloned());
-            trimmed
-        } else {
-            messages.clone()
-        };
+        let context = build_context(provider, session_id, messages).await?;
         let response = provider.respond(&context, &mut on_text).await;
         loader.abort();
         print!("\r\x1b[2K");
@@ -181,6 +175,41 @@ async fn run_turn(
         break;
     }
     Ok(())
+}
+
+async fn build_context(
+    provider: &impl Provider,
+    session_id: &str,
+    messages: &[Message],
+) -> Result<Vec<Message>> {
+    let mut system = messages
+        .first()
+        .cloned()
+        .unwrap_or_else(|| message("system", None));
+    if messages.len() > 41 {
+        let older = &messages[1..messages.len() - 40];
+        let summary = provider.summarize(older).await?;
+        sessions::set_summary(session_id, &summary)?;
+        system.content = Some(format!(
+            "{}\n\nConversation summary:\n{}",
+            system.content.unwrap_or_default(),
+            summary
+        ));
+        let mut context = vec![system];
+        context.extend(messages[messages.len() - 40..].iter().cloned());
+        Ok(context)
+    } else if let Some(summary) = sessions::get_summary(session_id)? {
+        system.content = Some(format!(
+            "{}\n\nConversation summary:\n{}",
+            system.content.unwrap_or_default(),
+            summary
+        ));
+        let mut context = vec![system];
+        context.extend(messages.iter().skip(1).cloned());
+        Ok(context)
+    } else {
+        Ok(messages.to_vec())
+    }
 }
 
 async fn handle_tool_call(
@@ -267,6 +296,10 @@ mod tests {
                 message: message("assistant", Some("mock response".into())),
             })
         }
+
+        async fn summarize(&self, _messages: &[Message]) -> Result<String> {
+            Ok("mock summary".into())
+        }
     }
 
     #[tokio::test]
@@ -282,6 +315,32 @@ mod tests {
         assert_eq!(
             messages.last().unwrap().content.as_deref(),
             Some("mock response")
+        );
+        std::env::remove_var("XDG_DATA_HOME");
+    }
+
+    #[tokio::test]
+    async fn compacts_long_context_into_persisted_summary() {
+        let _lock = crate::sessions::TEST_LOCK.lock().await;
+        let directory = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_DATA_HOME", directory.path());
+        let session = sessions::create().unwrap();
+        let mut messages = vec![message("system", Some("system instructions".into()))];
+        for index in 0..45 {
+            messages.push(message("user", Some(format!("message {index}"))));
+        }
+        let context = build_context(&MockProvider, &session, &messages)
+            .await
+            .unwrap();
+        assert_eq!(context.len(), 41);
+        assert!(context[0]
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("mock summary"));
+        assert_eq!(
+            sessions::get_summary(&session).unwrap().as_deref(),
+            Some("mock summary")
         );
         std::env::remove_var("XDG_DATA_HOME");
     }

@@ -11,6 +11,8 @@ hi resume 7fa8bcf8
 ```
 
 Messages and tool results are stored locally as the conversation runs.
+When a session grows beyond the working context, older messages are summarized
+by the configured model and the summary is persisted with the session.
 
 ## Local slash commands
 

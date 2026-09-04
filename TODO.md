@@ -25,7 +25,7 @@
 - [x] Generate readable session titles.
 - [x] Implement `sessions`, `resume`, and `delete`.
 - [x] Add `/clear` and `/model`; `/new` and `/resume` remain CLI workflows.
-- [x] Add basic context-window trimming; conversation summaries remain planned.
+- [x] Add persisted AI-generated conversation summaries and bounded context windows.
 
 ## Milestone 3 — approved command execution
 

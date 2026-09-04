@@ -39,6 +39,7 @@ pub trait Provider: Send + Sync {
         messages: &[Message],
         on_text: &mut (dyn FnMut(String) + Send),
     ) -> Result<Response>;
+    async fn summarize(&self, messages: &[Message]) -> Result<String>;
 }
 
 pub struct OpenAiCompatibleProvider {
@@ -63,6 +64,21 @@ struct ChatRequest<'a> {
     messages: &'a [Message],
     tools: serde_json::Value,
     stream: bool,
+}
+
+#[derive(Serialize)]
+struct SummaryRequest<'a> {
+    model: &'a str,
+    messages: &'a [Message],
+    stream: bool,
+}
+#[derive(Deserialize)]
+struct BasicChatResponse {
+    choices: Vec<BasicChoice>,
+}
+#[derive(Deserialize)]
+struct BasicChoice {
+    message: Message,
 }
 #[async_trait]
 impl Provider for OpenAiCompatibleProvider {
@@ -157,6 +173,48 @@ impl Provider for OpenAiCompatibleProvider {
                 },
             },
         })
+    }
+
+    async fn summarize(&self, messages: &[Message]) -> Result<String> {
+        let transcript = messages
+            .iter()
+            .filter_map(|message| {
+                message
+                    .content
+                    .as_ref()
+                    .map(|content| format!("{}: {content}", message.role))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let summary_messages = [
+            Message { role: "system".into(), content: Some("Summarize this terminal-assistant conversation for future context. Preserve user goals, decisions, file paths, commands, command outcomes, errors, and unfinished work. Be concise and factual. Do not suggest new actions.".into()), name: None, tool_call_id: None, tool_calls: None },
+            Message { role: "user".into(), content: Some(transcript), name: None, tool_call_id: None, tool_calls: None },
+        ];
+        let response = self
+            .client
+            .post(format!("{}/chat/completions", self.base_url))
+            .bearer_auth(&self.api_key)
+            .json(&SummaryRequest {
+                model: &self.model,
+                messages: &summary_messages,
+                stream: false,
+            })
+            .send()
+            .await
+            .context("summary request failed")?;
+        let status = response.status();
+        let body = response.text().await?;
+        if !status.is_success() {
+            anyhow::bail!("summary request returned {status}");
+        }
+        let parsed: BasicChatResponse =
+            serde_json::from_str(&body).context("invalid summary response")?;
+        parsed
+            .choices
+            .into_iter()
+            .next()
+            .and_then(|choice| choice.message.content)
+            .context("provider returned an empty summary")
     }
 }
 

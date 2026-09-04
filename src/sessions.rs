@@ -21,8 +21,10 @@ fn open() -> Result<Connection> {
 fn migrate(db: &Connection) -> Result<()> {
     let version: i32 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     if version == 0 {
-        db.execute_batch("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, title TEXT NOT NULL, cwd TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, message TEXT NOT NULL, created_at INTEGER NOT NULL); PRAGMA user_version = 1;")?;
-    } else if version != 1 {
+        db.execute_batch("CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, title TEXT NOT NULL, cwd TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, summary TEXT NOT NULL DEFAULT ''); CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, message TEXT NOT NULL, created_at INTEGER NOT NULL); PRAGMA user_version = 2;")?;
+    } else if version == 1 {
+        db.execute_batch("ALTER TABLE sessions ADD COLUMN summary TEXT NOT NULL DEFAULT ''; PRAGMA user_version = 2;")?;
+    } else if version != 2 {
         anyhow::bail!("unsupported session database version: {version}");
     }
     Ok(())
@@ -36,7 +38,7 @@ fn now() -> i64 {
 pub fn create() -> Result<String> {
     let id = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
     open()?.execute(
-        "INSERT INTO sessions VALUES (?1, ?2, ?3, ?4, ?4)",
+        "INSERT INTO sessions(id,title,cwd,created_at,updated_at,summary) VALUES (?1, ?2, ?3, ?4, ?4, '')",
         params![
             id,
             "New session",
@@ -87,6 +89,20 @@ pub fn clear_messages(id: &str) -> Result<()> {
     open()?.execute(
         "DELETE FROM messages WHERE session_id=?1 AND role != 'system'",
         [id],
+    )?;
+    Ok(())
+}
+pub fn get_summary(id: &str) -> Result<Option<String>> {
+    let summary: String =
+        open()?.query_row("SELECT summary FROM sessions WHERE id=?1", [id], |row| {
+            row.get(0)
+        })?;
+    Ok((!summary.trim().is_empty()).then_some(summary))
+}
+pub fn set_summary(id: &str, summary: &str) -> Result<()> {
+    open()?.execute(
+        "UPDATE sessions SET summary=?2, updated_at=?3 WHERE id=?1",
+        params![id, summary, now()],
     )?;
     Ok(())
 }
