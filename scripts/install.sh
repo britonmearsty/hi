@@ -31,11 +31,10 @@ tmp_dir=$(mktemp -d 2>/dev/null || mktemp -d -t hi-install)
 cleanup() { rm -rf "$tmp_dir"; }
 trap cleanup EXIT INT TERM
 
-release_url=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | sed -n "s#.*\"browser_download_url\": \"\([^\"]*${asset}[^\"]*\)\".*#\1#p" | head -n 1 || true)
+release_url="https://github.com/$REPO/releases/latest/download/${asset}.tar.gz"
 
-if [ -n "$release_url" ]; then
+if curl -fsSL "$release_url" -o "$tmp_dir/archive.$archive"; then
   say "downloading latest $asset release"
-  curl -fsSL "$release_url" -o "$tmp_dir/archive.$archive"
   mkdir -p "$tmp_dir/extracted"
   tar -xzf "$tmp_dir/archive.$archive" -C "$tmp_dir/extracted"
   binary=$(find "$tmp_dir/extracted" -type f -name "$BIN_NAME" -print -quit)
