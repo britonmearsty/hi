@@ -303,8 +303,8 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn agent_loop_accepts_mock_provider() {
-        let _lock = crate::sessions::TEST_LOCK.lock().await;
         let directory = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_DATA_HOME", directory.path());
         let session = sessions::create().unwrap();
@@ -320,8 +320,8 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn compacts_long_context_into_persisted_summary() {
-        let _lock = crate::sessions::TEST_LOCK.lock().await;
         let directory = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_DATA_HOME", directory.path());
         let session = sessions::create().unwrap();

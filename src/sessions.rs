@@ -6,9 +6,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-#[cfg(test)]
-pub static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 fn open() -> Result<Connection> {
     let path = config::data_path();
     if let Some(parent) = path.parent() {
@@ -182,8 +179,8 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn public_session_lifecycle_works() {
-        let _lock = TEST_LOCK.try_lock().unwrap();
         let directory = tempfile::tempdir().unwrap();
         std::env::set_var("XDG_DATA_HOME", directory.path());
         let id = create().unwrap();
