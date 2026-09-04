@@ -6,6 +6,8 @@ an approval policy you control.
 
 ## Quick start
 
+Requires Rust 1.85 or newer. CI currently checks Linux, macOS, and Windows.
+
 ```bash
 git clone <repository-url>
 cd hi

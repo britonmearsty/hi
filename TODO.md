@@ -7,7 +7,7 @@
 - [x] Add README and this development checklist.
 - [x] Add formatting, linting, and CI configuration.
 - [x] Let's style everything up: colorize, make the UI/UX pretty and easy to use, improve titles, improve the prompt instead of `hi>`, use an icon, add a loader, and make AI-run commands clearly distinguishable.
-- [ ] Decide minimum supported Rust version and supported platforms.
+- [x] Set minimum Rust version to 1.85 and document Linux, macOS, and Windows support.
 
 ## Milestone 1 — usable chat
 
