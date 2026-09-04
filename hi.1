@@ -1,0 +1,30 @@
+.TH HI 1
+.SH NAME
+hi \- local-first terminal AI assistant
+.SH SYNOPSIS
+.B hi
+.RI [ COMMAND ]
+.SH DESCRIPTION
+Chat with an OpenAI-compatible provider from the terminal. Commands proposed by
+the assistant require explicit approval before execution.
+.SH COMMANDS
+.TP
+.B hi config
+Configure provider, credentials, endpoint, and model.
+.TP
+.B hi sessions
+List saved sessions.
+.TP
+.B hi resume ID
+Resume a saved session.
+.TP
+.B hi models
+List models exposed by the configured provider.
+.TP
+.B hi completions SHELL
+Generate shell completion script for bash, zsh, fish, or powershell.
+.SH FILES
+.IP ~/.config/hi/config.env
+Provider configuration. API keys are stored in the operating system credential store and a protected 0600 fallback file.
+.IP ~/.local/share/hi/sessions.db
+Local conversation database.

@@ -1,0 +1,32 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            asset: hi-linux-x86_64
+          - target: aarch64-apple-darwin
+            asset: hi-macos-aarch64
+          - target: x86_64-pc-windows-msvc
+            asset: hi-windows-x86_64.exe
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: hi
+          target: ${{ matrix.target }}
+          archive: ${{ matrix.asset }}
+          token: ${{ secrets.GITHUB_TOKEN }}
