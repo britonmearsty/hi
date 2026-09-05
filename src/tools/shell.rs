@@ -125,11 +125,23 @@ mod tests {
 
     #[tokio::test]
     async fn respects_working_directory() {
+        let workdir = std::env::temp_dir().join("hi-cwd-probe");
+        std::fs::create_dir_all(&workdir).unwrap();
+        let command = if cfg!(windows) { "cmd /c cd" } else { "pwd" };
         let tool = ShellTool;
         let result = tool
-            .execute(&json!({ "command": "pwd", "reason": "test", "cwd": "/tmp" }))
+            .execute(&json!({
+                "command": command,
+                "reason": "test",
+                "cwd": workdir.to_string_lossy(),
+            }))
             .await
             .unwrap();
-        assert!(result.contains("/tmp"));
+        let name = workdir.file_name().unwrap().to_string_lossy().to_string();
+        assert!(
+            result.contains(&name),
+            "expected cwd `{name}` in result: {result}"
+        );
+        std::fs::remove_dir_all(&workdir).ok();
     }
 }
