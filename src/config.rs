@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::{
     env, fs,
@@ -58,6 +58,7 @@ pub fn load() -> Result<Config> {
             }
         }
     }
+    migrate(&mut config);
     if let Ok(value) = env::var("HI_API_KEY") {
         config.api_key = value;
     } else if config.api_key.is_empty() {
@@ -79,19 +80,68 @@ pub fn load() -> Result<Config> {
     Ok(config)
 }
 
+/// Bring old or partially-written configs in line with the provider registry:
+/// legacy provider names map to their modern equivalents, and untouched
+/// OpenAI-style defaults are replaced with the selected provider's presets.
+fn migrate(config: &mut Config) {
+    if config.provider == "openai-compatible" {
+        config.provider = "openai".into();
+    }
+    if config.provider == "local" {
+        config.provider = "ollama".into();
+    }
+    if config.provider == "openai" {
+        return;
+    }
+    let Some((url, model, _)) = crate::providers::preset(&config.provider) else {
+        return;
+    };
+    if config.base_url.is_empty() || config.base_url == Config::default().base_url {
+        config.base_url = url.into();
+    }
+    if config.model == "gpt-4o-mini" {
+        config.model = model.into();
+    }
+}
+
+/// True when the provider needs an API key; local providers like Ollama do not.
+pub fn key_required(provider: &str) -> bool {
+    crate::providers::preset(provider)
+        .map(|(_, _, requires)| requires)
+        .unwrap_or(true)
+}
+
 pub fn setup() -> Result<()> {
     let old = load()?;
     println!("\nhi setup\n=======");
     println!("Choose the provider for this installation:");
-    println!("  1) OpenAI");
-    println!("  2) OpenAI-compatible endpoint");
-    println!("  3) Local endpoint");
-    let provider_choice = prompt("Provider [1]", "1")?;
-    let (provider, default_url, key_required) = match provider_choice.trim() {
-        "2" => ("openai-compatible", old.base_url.clone(), false),
-        "3" => ("local", "http://localhost:11434/v1".into(), false),
-        _ => ("openai", "https://api.openai.com/v1".into(), true),
-    };
+    let providers = crate::providers::provider_names();
+    for (index, name) in providers.iter().enumerate() {
+        println!("  {}) {}", index + 1, provider_display(name));
+    }
+    let default_choice = providers
+        .iter()
+        .position(|name| *name == old.provider)
+        .map(|index| (index + 1).to_string())
+        .unwrap_or_else(|| "1".into());
+    let choice = prompt("Provider", &default_choice)?;
+    let (provider, default_url, key_required): (String, String, bool) =
+        match choice.trim().parse::<usize>() {
+            Ok(index) if index >= 1 && index <= providers.len() => {
+                let name = providers[index - 1];
+                let (url, _, requires_key) =
+                    crate::providers::preset(name).unwrap_or(("", "", false));
+                (name.to_string(), url.into(), requires_key)
+            }
+            _ => {
+                let (url, _, requires_key) = crate::providers::preset(&old.provider).unwrap_or((
+                    "https://api.openai.com/v1",
+                    "gpt-4o-mini",
+                    true,
+                ));
+                (old.provider.clone(), url.into(), requires_key)
+            }
+        };
     println!("\nStep 2 of 3: API credentials");
     let api_key = if key_required || !old.api_key.is_empty() {
         prompt_secret(
@@ -105,21 +155,20 @@ pub fn setup() -> Result<()> {
     } else {
         prompt_secret("API key (optional for local endpoints)", "")?
     };
-    let base_url = if provider == "openai" {
+    let base_url = if provider.as_str() == "openai" {
         default_url
     } else {
         prompt("Base URL", &default_url)?
     };
     println!("\nStep 3 of 3: model");
-    println!("  1) gpt-4o-mini (recommended default)");
-    println!("  2) gpt-4o");
-    println!("  3) Enter a custom model ID");
-    let model_choice = prompt("Model [1]", "1")?;
-    let model = match model_choice.trim() {
-        "2" => "gpt-4o".into(),
-        "3" => prompt("Model ID", &old.model)?,
-        _ => "gpt-4o-mini".into(),
+    let (_, preset_model, _) =
+        crate::providers::preset(&provider).unwrap_or(("", "gpt-4o-mini", false));
+    let default_model = if old.provider == provider && !old.model.is_empty() {
+        old.model.clone()
+    } else {
+        preset_model.into()
     };
+    let model = prompt("Model ID", &default_model)?;
     println!("\nCommand approval");
     println!("  1) Always ask (recommended)");
     println!("  2) Auto-approve safe commands");
@@ -182,13 +231,23 @@ fn prompt_secret(label: &str, existing: &str) -> Result<String> {
         value.trim().into()
     })
 }
+fn provider_display(name: &str) -> String {
+    match name {
+        "openai" => "OpenAI".into(),
+        "anthropic" => "Anthropic (Claude)".into(),
+        "gemini" => "Google Gemini".into(),
+        "openrouter" => "OpenRouter".into(),
+        "ollama" => "Ollama (local, no API key)".into(),
+        other => other.to_string(),
+    }
+}
 pub fn ensure_configured() -> Result<()> {
     let config = load()?;
-    if !config_path().exists() || (config.api_key.is_empty() && config.provider == "openai") {
+    if !config_path().exists() || (config.api_key.is_empty() && key_required(&config.provider)) {
         println!("Welcome to hi. Let's configure your AI provider first.");
         setup()?;
         let configured = load()?;
-        if configured.api_key.is_empty() && configured.provider != "local" {
+        if configured.api_key.is_empty() && key_required(&configured.provider) {
             anyhow::bail!("API key was not saved; run `hi config` and try again");
         }
     }
@@ -209,50 +268,84 @@ pub async fn doctor() -> Result<()> {
         config.model,
         config.approval_mode
     );
-    if config.api_key.is_empty() {
+    if config.api_key.is_empty() && key_required(&config.provider) {
         anyhow::bail!("set HI_API_KEY or run `hi config`");
     }
-    let response = reqwest::Client::new()
-        .get(format!("{}/models", config.base_url.trim_end_matches('/')))
-        .bearer_auth(config.api_key)
-        .send()
-        .await
-        .context("provider request failed")?;
-    if !response.status().is_success() {
-        anyhow::bail!("provider returned {}", response.status());
+    let provider = crate::providers::create(&config)?;
+    match provider.models().await {
+        Ok(models) => println!("provider: reachable ({} models exposed)", models.len()),
+        Err(error) => {
+            anyhow::bail!("provider unreachable: {error:#}");
+        }
     }
-    println!("provider: reachable");
     Ok(())
 }
 pub async fn models() -> Result<()> {
     let config = load()?;
-    if config.api_key.is_empty() && config.provider != "local" {
+    if config.api_key.is_empty() && key_required(&config.provider) {
         anyhow::bail!("set up credentials first with `hi config`");
     }
-    let response = reqwest::Client::new()
-        .get(format!("{}/models", config.base_url.trim_end_matches('/')))
-        .bearer_auth(config.api_key)
-        .send()
-        .await
-        .context("provider request failed")?;
-    let status = response.status();
-    let body = response.text().await?;
-    if !status.is_success() {
-        anyhow::bail!("provider returned {status}: {body}");
-    }
-    let value: serde_json::Value =
-        serde_json::from_str(&body).context("invalid models response")?;
-    if let Some(models) = value.get("data").and_then(|data| data.as_array()) {
-        for model in models {
-            if let Some(id) = model.get("id").and_then(|id| id.as_str()) {
-                println!("{id}");
-            }
-        }
+    let provider = crate::providers::create(&config)?;
+    let list = provider.models().await?;
+    for id in list {
+        println!("{id}");
     }
     Ok(())
 }
 pub fn show() {
     if let Err(error) = setup() {
         eprintln!("configuration failed: {error:#}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample(provider: &str) -> Config {
+        Config {
+            provider: provider.into(),
+            api_key: String::new(),
+            base_url: "https://api.openai.com/v1".into(),
+            model: "gpt-4o-mini".into(),
+            approval_mode: "always".into(),
+        }
+    }
+
+    #[test]
+    fn migrates_legacy_provider_names() {
+        let mut compatible = sample("openai-compatible");
+        compatible.base_url = "https://example.com/v1".into();
+        migrate(&mut compatible);
+        assert_eq!(compatible.provider, "openai");
+        assert_eq!(compatible.base_url, "https://example.com/v1");
+
+        let mut local = sample("local");
+        local.base_url = "http://localhost:11434/v1".into();
+        migrate(&mut local);
+        assert_eq!(local.provider, "ollama");
+        assert_eq!(local.base_url, "http://localhost:11434/v1");
+    }
+
+    #[test]
+    fn applies_presets_when_openai_defaults_untouched() {
+        let mut anthropic = sample("anthropic");
+        migrate(&mut anthropic);
+        assert_eq!(anthropic.base_url, "https://api.anthropic.com");
+        assert_eq!(anthropic.model, crate::providers::anthropic::PRESET_MODEL);
+
+        let mut ollama = sample("ollama");
+        migrate(&mut ollama);
+        assert_eq!(ollama.base_url, "http://localhost:11434");
+        assert_eq!(ollama.model, crate::providers::ollama::PRESET_MODEL);
+    }
+
+    #[test]
+    fn openai_preserves_custom_base_url() {
+        let mut custom = sample("openai");
+        custom.base_url = "https://my-gateway.example/v2".into();
+        migrate(&mut custom);
+        assert_eq!(custom.base_url, "https://my-gateway.example/v2");
+        assert_eq!(custom.model, "gpt-4o-mini");
     }
 }

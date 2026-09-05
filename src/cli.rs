@@ -2,8 +2,16 @@ use clap::{Parser, Subcommand};
 use clap_complete::Shell;
 
 #[derive(Debug, Parser)]
-#[command(name = "hi", version, about = "A local-first terminal AI assistant")]
+#[command(
+    name = "hi",
+    version,
+    about = "A local-first terminal AI assistant",
+    args_conflicts_with_subcommands = true
+)]
 pub struct Cli {
+    /// Ask a single question and print the response, without starting the REPL.
+    #[arg(value_name = "PROMPT")]
+    pub prompt: Option<String>,
     #[command(subcommand)]
     pub command: Option<Command>,
 }

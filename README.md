@@ -1,8 +1,9 @@
 # hi
 
-`hi` is a local-first terminal AI assistant. Chat with an OpenAI-compatible
-model, resume previous conversations, and ask it to run terminal commands with
-an approval policy you control.
+`hi` is a local-first terminal AI assistant. Chat with OpenAI, Anthropic
+Claude, Google Gemini, OpenRouter, or a local Ollama server, resume previous
+conversations, and let the assistant work with files and run terminal commands
+under an approval policy you control.
 
 ## Quick start
 
@@ -22,25 +23,18 @@ On Windows PowerShell:
 irm https://raw.githubusercontent.com/britonmearsty/hi/main/scripts/install.ps1 | iex
 ```
 
-Then run `hi`. The first run opens the provider setup guide automatically. If
-no release exists yet, the Unix installer falls back to building from source
-with Cargo.
+Or build from source:
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/britonmearsty/hi.git
 cd hi
 cargo run
 ```
 
-On the first run, `hi` opens a setup guide for provider, API key, endpoint,
-model, and command approval mode.
-
-Build an optimized binary with:
-
-```bash
-cargo build --release
-./target/release/hi
-```
+On the first run, `hi` opens a setup guide where you pick a provider, enter
+the API key, endpoint, model, and approval mode. Or configure non-interactively
+with environment variables (see below). Run `hi config` any time to reconfigure.
+`hi doctor` verifies the setup and connectivity.
 
 ## Basic usage
 
@@ -55,17 +49,22 @@ hi delete --all            # delete every session
 hi config                  # rerun setup
 hi doctor                  # check configuration and connectivity
 hi models                  # list provider models
+hi "ask a single question" # answer without starting the REPL
 ```
 
 Inside chat, use:
 
 ```text
-/help       show local commands
-/sessions   list saved sessions
-/clear      clear the current session's conversation
-/model      show the active provider and model
-/new        leave the current session
-/quit       exit
+/help [command]   show help (or explain one command)
+/sessions         list saved sessions
+/resume <id>      switch to another session
+/clear            clear the terminal screen
+/reset            forget this session's conversation history
+/model [name]     show or switch the model
+/config           show provider, URL, model and approval settings
+/doctor           check whether the provider is reachable
+/new              leave this session and start afresh
+/quit /exit       leave hi
 ```
 
 Slash commands are handled locally and are never sent to the AI. Press Tab
@@ -74,36 +73,61 @@ and multiline input by ending a line with `\\`.
 
 See [docs/USAGE.md](docs/USAGE.md) for the full workflow.
 
-## AI command execution
+## Tools and approval
 
-The assistant may propose a command through the `run_command` tool. `hi` shows
-the exact command, its reason, shell mode, and risk level before executing it.
+The assistant is given tools it can call to get real work done:
 
-Default behavior is to ask for approval every time:
+| Tool          | Purpose                                      | Risk      |
+|---------------|----------------------------------------------|-----------|
+| `run_command` | Run a terminal command (shell syntax opt-in) | assessed   |
+| `read_file`   | Read a file, optionally in chunks            | safe      |
+| `write_file`  | Create, overwrite, or append to a file       | caution   |
+| `list_dir`    | List a directory's entries                   | safe      |
+| `search`      | Regex search across a file or directory tree | safe      |
+| `delete`      | Remove a file or directory                   | dangerous |
+
+Before anything runs, `hi` shows the preview, risk level, and reason:
 
 ```text
-⚙ AI command
+⚙ AI run_command
   git status --short
 ✓ Safe Reason: inspect the current repository
-  Allow this command? [y/N]
+  Allow this action? [y/N]
 ```
 
-Simple commands run without a shell. Shell syntax requires explicit shell mode.
 Commands involving `sudo`, destructive deletion, disk tools, or system power
-operations are marked dangerous.
+operations are marked dangerous; anything needing a shell or touching files is
+marked caution; everything else is safe.
 
-Approval modes are `always` (default), `safe-only`, and `never` (unsafe).
-Command output is returned as only useful output or error, limited to 20,000
-characters, with a 30-second timeout.
+Approval modes:
 
-## Providers and environment variables
+- `always` (default): ask before every action.
+- `safe-only`: auto-approve safe actions, ask for the rest.
+- `never`: approve everything per the policy; for controlled environments only.
 
-`hi` supports OpenAI and providers exposing an OpenAI-compatible chat
-completions endpoint. Configuration precedence is:
+Action results are limited to 20,000 characters with a 30-second timeout, and
+likely secrets (API keys, passwords, tokens) are redacted from output. In
+headless mode (`hi "prompt"`), actions follow the configured policy without
+interactive prompts; anything not auto-approved is declined.
 
-```text
-environment variables > config file > defaults
-```
+## Providers
+
+| Provider   | Preset base URL                        | Default model         |
+|------------|----------------------------------------|-----------------------|
+| `openai`   | `https://api.openai.com/v1`            | `gpt-4o-mini`         |
+| `anthropic`| `https://api.anthropic.com`            | `claude-sonnet-4-5`   |
+| `gemini`   | `https://generativelanguage.googleapis.com` | `gemini-2.5-flash` |
+| `openrouter`| `https://openrouter.ai/api/v1`        | `openrouter/auto`     |
+| `ollama`   | `http://localhost:11434`               | `llama3.2`            |
+
+Ollama is local and keyless: start it with `ollama serve` and `hi` will use it.
+Set a custom base URL for any OpenAI-compatible gateway that speaks the Chat
+Completions protocol (OpenRouter shares the same wire format as OpenAI).
+
+### Environment variables
+
+Configuration precedence is: environment variables, then the config file, then
+provider defaults.
 
 ```bash
 export HI_API_KEY="..."
@@ -148,8 +172,10 @@ hi config
 hi doctor
 ```
 
-For compatible providers, verify the base URL includes the expected API prefix,
-usually `/v1`, and check the model ID with `hi models`.
+For OpenAI-compatible gateways, verify the base URL includes the expected API
+prefix (usually `/v1`) and check the model ID with `hi models`. For Ollama,
+make sure the local server is running (`ollama serve`) — `hi doctor` and error
+messages detect local endpoints and suggest this.
 
 ## Development
 
@@ -160,7 +186,9 @@ cargo test --locked
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-See [hi.1](hi.1) for the man page and [TODO.md](TODO.md) for the roadmap.
+See [docs/USAGE.md](docs/USAGE.md) for the usage guide, [hi.1](hi.1) for the
+man page, [CHANGELOG.md](CHANGELOG.md) for release notes, and
+[TODO.md](TODO.md) for the roadmap.
 
 ## License
 

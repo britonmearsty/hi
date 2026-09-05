@@ -1,7 +1,14 @@
+use std::{
+    io::{self, Write},
+    sync::OnceLock,
+};
 use syntect::{
-    easy::HighlightLines, highlighting::ThemeSet, parsing::SyntaxSet,
+    easy::HighlightLines,
+    highlighting::{Theme, ThemeSet},
+    parsing::SyntaxSet,
     util::as_24_bit_terminal_escaped,
 };
+use unicode_width::UnicodeWidthChar;
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
@@ -10,45 +17,20 @@ const ITALIC: &str = "\x1b[3m";
 const CYAN: &str = "\x1b[36m";
 const YELLOW: &str = "\x1b[33m";
 
-pub fn render_markdown(input: &str) -> String {
-    let mut output = String::new();
-    let mut lines = input.lines().peekable();
-    while let Some(line) = lines.next() {
-        if let Some(separator) = lines.peek().copied() {
-            if is_table_header(line) && is_table_separator(separator) {
-                let alignments = parse_alignments(lines.next().unwrap());
-                let mut rows = vec![split_table_row(line)];
-                while let Some(next) = lines.peek().copied() {
-                    if !is_table_row(next) {
-                        break;
-                    }
-                    rows.push(split_table_row(lines.next().unwrap()));
-                }
-                output.push_str(&render_table(rows, &alignments));
-                continue;
-            }
-        }
-        if let Some((fence, language)) = line
-            .strip_prefix("```")
-            .map(|language| ("```", language))
-            .or_else(|| line.strip_prefix("~~~").map(|language| ("~~~", language)))
-        {
-            let language = language.trim();
-            let mut code = String::new();
-            for next in lines.by_ref() {
-                if next.trim() == fence {
-                    break;
-                }
-                code.push_str(next);
-                code.push('\n');
-            }
-            output.push_str(&highlight_code(&code, language));
-            continue;
-        }
-        output.push_str(&render_line(line));
-        output.push('\n');
-    }
-    output.trim_end_matches('\n').to_owned()
+static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
+static THEME_SET: OnceLock<ThemeSet> = OnceLock::new();
+
+fn syntax_set() -> &'static SyntaxSet {
+    SYNTAX_SET.get_or_init(SyntaxSet::load_defaults_newlines)
+}
+fn theme_set() -> &'static ThemeSet {
+    THEME_SET.get_or_init(ThemeSet::load_defaults)
+}
+fn code_theme() -> Option<&'static Theme> {
+    theme_set()
+        .themes
+        .get("base16-ocean.dark")
+        .or_else(|| theme_set().themes.values().next())
 }
 
 fn parse_alignments(line: &str) -> Vec<Alignment> {
@@ -212,7 +194,7 @@ fn render_compact_table(rows: &[Vec<String>], terminal_width: usize) -> String {
     output
 }
 
-fn terminal_width() -> usize {
+pub fn terminal_width() -> usize {
     terminal_size::terminal_size()
         .map(|(terminal_size::Width(width), _)| width as usize)
         .or_else(|| {
@@ -255,6 +237,49 @@ fn wrap_text(value: &str, width: usize) -> Vec<String> {
         lines.push(current);
     }
     lines
+}
+
+/// Trim `rendered` to at most `max` terminal cells, appending a dim ellipsis
+/// when content is cut. ANSI escape sequences are preserved and do not count
+/// towards the width.
+fn truncate_to_width(rendered: &str, max: usize) -> String {
+    if StreamingRenderer::display_width(rendered) <= max {
+        return rendered.to_owned();
+    }
+    let max = max.saturating_sub(1).max(1);
+    let mut out = String::new();
+    let mut width = 0;
+    let mut truncated = false;
+    let mut chars = rendered.chars();
+    'outer: while let Some(character) = chars.next() {
+        if character == '\x1b' {
+            out.push(character);
+            if chars.next() == Some('[') {
+                out.push('[');
+                for code in chars.by_ref() {
+                    out.push(code);
+                    if ('\x40'..='\x7e').contains(&code) {
+                        continue 'outer;
+                    }
+                }
+            }
+            continue;
+        }
+        let cell = UnicodeWidthChar::width(character).unwrap_or(0);
+        if width + cell > max {
+            truncated = true;
+            break;
+        }
+        out.push(character);
+        width += cell;
+    }
+    if truncated {
+        out.push_str(RESET);
+        out.push_str(DIM);
+        out.push('…');
+        out.push_str(RESET);
+    }
+    out
 }
 
 fn visible_length(value: &str) -> usize {
@@ -387,58 +412,316 @@ fn find_marker(chars: &[char], start: usize, marker: &str) -> Option<usize> {
         .map(|p| p + start)
 }
 
-fn highlight_code(code: &str, language: &str) -> String {
-    let syntax_set = SyntaxSet::load_defaults_newlines();
-    let theme_set = ThemeSet::load_defaults();
-    let theme = theme_set
-        .themes
-        .get("base16-ocean.dark")
-        .or_else(|| theme_set.themes.values().next());
-    let Some(theme) = theme else {
-        return format!("{DIM}{code}{RESET}");
-    };
-    let syntax = syntax_set
-        .find_syntax_by_token(language)
-        .unwrap_or_else(|| syntax_set.find_syntax_plain_text());
-    let mut highlighter = HighlightLines::new(syntax, theme);
-    let mut output = format!("{DIM}┌─ {language}\n{RESET}");
-    for line in code.lines() {
-        let highlighted = highlighter
-            .highlight_line(line, &syntax_set)
-            .unwrap_or_default();
-        output.push_str("│ ");
-        output.push_str(&as_24_bit_terminal_escaped(&highlighted[..], false));
-        output.push('\n');
+struct CodeState {
+    fence: &'static str,
+    highlighter: Option<HighlightLines<'static>>,
+}
+
+struct TableState {
+    header: Vec<String>,
+    rows: Vec<Vec<String>>,
+    alignments: Vec<Alignment>,
+}
+
+/// Incrementally renders streamed Markdown into the terminal, buffering only
+/// the minimum state needed for code blocks and pipe tables.
+pub struct StreamingRenderer {
+    buffer: String,
+    output: String,
+    code: Option<CodeState>,
+    pending_header: Option<String>,
+    table: Option<TableState>,
+    partial_shown: bool,
+    term_width: usize,
+    finished: bool,
+}
+
+impl StreamingRenderer {
+    pub fn new() -> Self {
+        Self {
+            buffer: String::new(),
+            output: String::new(),
+            code: None,
+            pending_header: None,
+            table: None,
+            partial_shown: false,
+            term_width: terminal_width(),
+            finished: false,
+        }
     }
-    output.push_str(&format!("{DIM}└─{RESET}\n"));
-    output
+
+    /// Consume a streamed chunk, emitting every now-complete line.
+    pub fn feed(&mut self, chunk: &str) {
+        if self.finished {
+            return;
+        }
+        self.buffer.push_str(chunk);
+        while let Some(position) = self.buffer.find('\n') {
+            let line = self.buffer[..position].to_owned();
+            self.buffer.drain(..position + 1);
+            self.handle_line(line.strip_suffix('\r').unwrap_or(&line));
+        }
+    }
+
+    /// Render anything still buffered: a trailing partial line, an unfinished
+    /// pipe table, or an unclosed code block.
+    pub fn finish(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        if !self.buffer.is_empty() {
+            let line = std::mem::take(&mut self.buffer);
+            self.handle_line(line.strip_suffix('\r').unwrap_or(&line));
+        }
+        if let Some(header) = self.pending_header.take() {
+            self.emit(&format!("{}\n", render_line(&header)));
+        }
+        if let Some(table) = self.table.take() {
+            let mut rows = vec![table.header];
+            rows.extend(table.rows);
+            self.emit(&render_table(rows, &table.alignments));
+        }
+        if self.code.is_some() {
+            self.emit(&format!("{DIM}└─{RESET}\n"));
+            self.code = None;
+        }
+    }
+
+    /// Paint accumulated output and the in-flight partial line to stdout.
+    ///
+    /// Completed lines are printed once, top to bottom. The trailing partial
+    /// line occupies exactly one terminal row: when it is wider than the
+    /// terminal it is truncated with a dim ellipsis, so repainting it never
+    /// wraps, scrolls the screen, or leaves ghost rows behind.
+    pub fn paint(&mut self) {
+        if self.partial_shown {
+            print!("\r\x1b[2K");
+        }
+        if !self.output.is_empty() {
+            print!("{}", self.output);
+            self.output.clear();
+        }
+        if !self.buffer.is_empty() {
+            let partial = truncate_to_width(&self.live_partial(), self.term_width);
+            print!("\r\x1b[2K{}", partial);
+            self.partial_shown = true;
+        } else {
+            self.partial_shown = false;
+        }
+        let _ = io::stdout().flush();
+    }
+
+    fn live_partial(&self) -> String {
+        if self.code.is_some() {
+            format!("│ {DIM}{}{RESET}", self.buffer)
+        } else {
+            render_inline(&self.buffer)
+        }
+    }
+
+    /// Render a complete document to a styled string without writing to
+    /// stdout. Used for one-shot, non-interactive output.
+    pub fn render_once(&mut self, document: &str) -> String {
+        self.feed(document);
+        self.finish();
+        std::mem::take(&mut self.output)
+    }
+
+    /// Rendered string width in terminal cells, ignoring ANSI escape codes.
+    fn display_width(rendered: &str) -> usize {
+        let mut width = 0;
+        let mut chars = rendered.chars();
+        while let Some(character) = chars.next() {
+            if character == '\x1b' {
+                if chars.next() == Some('[') {
+                    for code in chars.by_ref() {
+                        if ('\x40'..='\x7e').contains(&code) {
+                            break;
+                        }
+                    }
+                }
+            } else {
+                width += UnicodeWidthChar::width(character).unwrap_or(0);
+            }
+        }
+        width
+    }
+
+    fn emit(&mut self, rendered: &str) {
+        self.output.push_str(rendered);
+    }
+
+    fn handle_line(&mut self, line: &str) {
+        if let Some(code) = self.code.as_mut() {
+            if line.trim() == code.fence {
+                self.emit(&format!("{DIM}└─{RESET}\n"));
+                self.code = None;
+            } else if let Some(highlighter) = code.highlighter.as_mut() {
+                let highlighted = highlighter
+                    .highlight_line(line, syntax_set())
+                    .unwrap_or_default();
+                self.emit(&format!(
+                    "│ {}\n",
+                    as_24_bit_terminal_escaped(&highlighted[..], false)
+                ));
+            } else {
+                self.emit(&format!("│ {DIM}{line}{RESET}\n"));
+            }
+            return;
+        }
+
+        if self.pending_header.is_some() {
+            let header = self.pending_header.take().unwrap();
+            if is_table_separator(line) {
+                self.table = Some(TableState {
+                    header: split_table_row(&header),
+                    rows: Vec::new(),
+                    alignments: parse_alignments(line),
+                });
+                return;
+            }
+            self.emit(&format!("{}\n", render_line(&header)));
+        }
+
+        if let Some(table) = self.table.as_mut() {
+            if is_table_row(line) {
+                table.rows.push(split_table_row(line));
+                return;
+            }
+            let finished = self.table.take().unwrap();
+            let mut rows = vec![finished.header];
+            rows.extend(finished.rows);
+            self.emit(&render_table(rows, &finished.alignments));
+        }
+
+        if let Some((fence, language)) = line
+            .strip_prefix("```")
+            .map(|language| ("```", language))
+            .or_else(|| line.strip_prefix("~~~").map(|language| ("~~~", language)))
+        {
+            let language = language.trim();
+            self.emit(&format!("{DIM}┌─ {language}\n{RESET}"));
+            let highlighter = code_theme().and_then(|theme| {
+                syntax_set()
+                    .find_syntax_by_token(language)
+                    .map(|syntax| HighlightLines::new(syntax, theme))
+            });
+            self.code = Some(CodeState { fence, highlighter });
+            return;
+        }
+
+        if is_table_header(line) {
+            self.pending_header = Some(line.to_owned());
+            return;
+        }
+
+        self.emit(&format!("{}\n", render_line(line)));
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::render_markdown;
+    use super::{truncate_to_width, StreamingRenderer, BOLD, DIM, RESET};
 
     #[test]
     fn renders_table_and_code_block() {
-        let rendered = render_markdown(
-            "| Name | Value |\n| --- | --- |\n| hi | `ok` |\n\n```rust\nfn main() {}\n```",
-        );
-        assert!(rendered.contains("┌"));
-        assert!(rendered.contains("hi"));
-        assert!(rendered.contains("fn"));
-        assert!(rendered.contains("main"));
-        assert!(rendered.contains("\x1b["));
+        let mut renderer = StreamingRenderer::new();
+        renderer
+            .feed("| Name | Value |\n| --- | --- |\n| hi | `ok` |\n\n```rust\nfn main() {}\n```");
+        renderer.finish();
+        assert!(renderer.output.contains("┌"));
+        assert!(renderer.output.contains("hi"));
+        assert!(renderer.output.contains("fn"));
+        assert!(renderer.output.contains("main"));
+        assert!(renderer.output.contains("\x1b["));
     }
 
     #[test]
     fn renders_extended_markdown() {
-        let rendered = render_markdown(
+        let mut renderer = StreamingRenderer::new();
+        renderer.feed(
             "1. First\n   - Nested\n\\*literal asterisk\\*\n\n| Left | Center | Right |\n| :--- | :---: | ---: |\n| a | b | c |\n\n~~~python\nprint('hi')\n~~~",
         );
-        assert!(rendered.contains("1."));
-        assert!(rendered.contains("Nested"));
-        assert!(rendered.contains("*literal asterisk*"));
-        assert!(rendered.contains("Center:"));
-        assert!(rendered.contains("print"));
+        renderer.finish();
+        assert!(renderer.output.contains("1."));
+        assert!(renderer.output.contains("Nested"));
+        assert!(renderer.output.contains("*literal asterisk*"));
+        assert!(renderer.output.contains("Center:"));
+        assert!(renderer.output.contains("print"));
+    }
+
+    #[test]
+    fn streams_plain_lines_and_keeps_partial_line_buffered() {
+        let mut renderer = StreamingRenderer::new();
+        renderer.feed("hello **world**");
+        assert!(renderer.output.is_empty());
+        renderer.feed(" and `code`\nnext line\n");
+        assert!(renderer.output.contains("hello"));
+        assert!(renderer.output.contains("world"));
+        assert!(renderer.output.contains("\x1b["));
+        renderer.finish();
+        assert!(renderer.output.ends_with("line\n"));
+    }
+
+    #[test]
+    fn streams_code_blocks_line_by_line() {
+        let mut renderer = StreamingRenderer::new();
+        renderer.feed("```rust\n");
+        assert!(renderer.output.contains("┌─"));
+        renderer.feed("fn main() {\n");
+        assert!(renderer.output.contains("│ "));
+        renderer.feed("}\n```\n");
+        assert!(renderer.output.contains("└─"));
+        renderer.finish();
+    }
+
+    #[test]
+    fn buffers_tables_until_rows_are_done() {
+        let mut renderer = StreamingRenderer::new();
+        renderer.feed("| Name | Value |\n");
+        assert!(renderer.output.is_empty());
+        renderer.feed("| --- | --- |\n");
+        assert!(renderer.output.is_empty());
+        renderer.feed("| hi | `wow` |\n");
+        assert!(renderer.output.is_empty());
+        renderer.feed("after\n");
+        assert!(renderer.output.contains("Name"));
+        assert!(renderer.output.contains("wow"));
+        assert!(renderer.output.contains("after"));
+        renderer.finish();
+    }
+
+    #[test]
+    fn closes_unfinished_constructs_on_finish() {
+        let mut renderer = StreamingRenderer::new();
+        renderer.feed("| Left | Right |\n| :--- | ---: |\n| a | b |\n```sh\n");
+        renderer.feed("echo hi");
+        renderer.finish();
+        assert!(renderer.output.contains("┌"));
+        assert!(renderer.output.contains("echo"));
+        assert!(renderer.output.contains("└─"));
+    }
+
+    #[test]
+    fn measures_display_width_ignoring_ansi() {
+        assert_eq!(
+            StreamingRenderer::display_width(&format!("{BOLD}hi{RESET}")),
+            2
+        );
+        assert_eq!(StreamingRenderer::display_width("héllo"), 5);
+        assert_eq!(StreamingRenderer::display_width("w寬"), 3);
+    }
+
+    #[test]
+    fn truncates_partial_to_width() {
+        assert_eq!(truncate_to_width("abc", 5), "abc");
+        let cut = truncate_to_width("abcdefgh", 5);
+        assert!(cut.starts_with("abcd"));
+        assert!(cut.contains('…'));
+        assert_eq!(
+            truncate_to_width(&format!("{BOLD}abcdef{RESET}"), 5),
+            format!("{BOLD}abcd{RESET}{DIM}…{RESET}")
+        );
     }
 }

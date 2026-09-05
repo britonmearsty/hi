@@ -62,3 +62,24 @@
 - [x] Add mock-provider integration tests.
 - [x] Audit command output and error messages for common credential leakage.
 - [x] Add database migration and backup guidance.
+
+## Milestone 6 — plug-and-play providers
+
+- [x] Extract a `Provider` trait and a factory behind `providers::create`.
+- [x] Implement OpenAI and OpenAI-compatible wire format once (`OpenAiWire`).
+- [x] Add OpenAI, Anthropic, Google Gemini, OpenRouter, and Ollama providers.
+- [x] Translate function calls and tool results into each provider's wire format.
+- [x] Add provider registry presets (base URL, model, key requirement).
+- [x] Migrate legacy config names (`openai-compatible` → openai, `local` → ollama).
+- [x] Make `hi doctor` and `hi models` provider-aware.
+
+## Milestone 7 — plug-and-play tools
+
+- [x] Extract a `Tool` trait and a registry (`tools::get`, `definitions`).
+- [x] Replace the hardcoded command handler with a registry-driven tool loop.
+- [x] Add file tools: read_file, write_file, list_dir, delete.
+- [x] Add a safe regex `search` tool (skips binaries, large files, `.git`).
+- [x] Let run_command target a working directory; support chunked file reads.
+- [x] Apply the approval policy uniformly across every tool.
+- [x] Run the tool loop in headless mode with the configured policy.
+- [x] Keep the system prompt tool-agnostic to avoid biasing the model.

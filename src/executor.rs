@@ -42,17 +42,28 @@ pub fn auto_approved(mode: &str, risk: Risk) -> bool {
 }
 
 pub async fn execute(command: &str, shell: bool) -> Result<String> {
-    execute_with_timeout(command, shell, Duration::from_secs(30)).await
+    execute_with_limit(command, shell, None, Duration::from_secs(30)).await
 }
 
-pub async fn execute_if_approved(command: &str, shell: bool, approved: bool) -> Result<String> {
-    if !approved {
-        return Ok("Command rejected by user.".into());
-    }
-    execute(command, shell).await
+pub async fn execute_in(
+    command: &str,
+    shell: bool,
+    cwd: Option<&std::path::Path>,
+) -> Result<String> {
+    execute_with_limit(command, shell, cwd, Duration::from_secs(30)).await
 }
 
+#[cfg(test)]
 pub async fn execute_with_timeout(command: &str, shell: bool, limit: Duration) -> Result<String> {
+    execute_with_limit(command, shell, None, limit).await
+}
+
+pub async fn execute_with_limit(
+    command: &str,
+    shell: bool,
+    cwd: Option<&std::path::Path>,
+    limit: Duration,
+) -> Result<String> {
     let mut process = if shell {
         let mut process = Command::new("sh");
         process.args(["-c", command]);
@@ -64,6 +75,9 @@ pub async fn execute_with_timeout(command: &str, shell: bool, limit: Duration) -
         process.args(args);
         process
     };
+    if let Some(cwd) = cwd {
+        process.current_dir(cwd);
+    }
     let output = timeout(
         limit,
         process
@@ -73,7 +87,7 @@ pub async fn execute_with_timeout(command: &str, shell: bool, limit: Duration) -
             .output(),
     )
     .await
-    .context("command timed out")??;
+    .map_err(|_| anyhow::anyhow!("command timed out after {}s", limit.as_secs()))??;
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     let mut result = if output.status.success() {
@@ -82,10 +96,17 @@ pub async fn execute_with_timeout(command: &str, shell: bool, limit: Duration) -
         } else {
             stdout
         }
-    } else if stderr.is_empty() {
-        "Command failed without an error message.".into()
     } else {
-        stderr
+        let code = output
+            .status
+            .code()
+            .map(|code| format!(" (exit {code})"))
+            .unwrap_or_default();
+        if stderr.is_empty() {
+            format!("Command failed{code} without an error message.")
+        } else {
+            format!("Command failed{code}:\n{stderr}")
+        }
     };
     result.truncate(20_000);
     Ok(crate::security::redact(&result))
@@ -137,14 +158,6 @@ mod tests {
         let command = format!("printf '{} '", "x".repeat(25_000));
         let output = super::execute(&command, true).await.unwrap();
         assert!(output.len() <= 20_000);
-    }
-
-    #[tokio::test]
-    async fn rejected_commands_never_reach_executor() {
-        let result = super::execute_if_approved("printf should-not-run", false, false)
-            .await
-            .unwrap();
-        assert_eq!(result, "Command rejected by user.");
     }
 
     #[tokio::test]

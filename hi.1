@@ -3,14 +3,26 @@
 hi \- local-first terminal AI assistant
 .SH SYNOPSIS
 .B hi
+.RI [ PROMPT ]
+.br
+.B hi
 .RI [ COMMAND ]
 .SH DESCRIPTION
-Chat with an OpenAI-compatible provider from the terminal. Commands proposed by
-the assistant require explicit approval before execution.
+.B hi
+is a terminal AI assistant that chats with a configured AI provider, remembers
+conversations across sessions, and can act on the system through approved
+tools. The assistant may propose terminal commands, read, write, search, list,
+and delete files; every action is shown with a preview and risk level and runs
+only after approval under the configured policy.
 .SH COMMANDS
 .TP
-.B hi config
-Configure provider, credentials, endpoint, and model.
+.B hi PROMPT
+Ask a single question and print the response without starting a chat.
+.TP
+.B hi chat
+Start a new chat session.
+.BR "\-\-session " ID
+continues an existing one.
 .TP
 .B hi sessions
 List saved sessions.
@@ -18,13 +30,43 @@ List saved sessions.
 .B hi resume ID
 Resume a saved session.
 .TP
+.B hi delete ID
+Delete a saved session.
+.B hi delete --all
+deletes every session.
+.TP
+.B hi config
+Run the interactive provider setup wizard.
+.TP
+.B hi doctor
+Check local configuration and provider connectivity.
+.TP
 .B hi models
-List models exposed by the configured provider.
+List the models exposed by the configured provider.
 .TP
 .B hi completions SHELL
-Generate shell completion script for bash, zsh, fish, or powershell.
+Generate a completion script for bash, zsh, fish, or powershell.
+.SH SLASH COMMANDS
+Within a chat, /help [command], /sessions, /resume, /clear, /reset, /model,
+/config, /doctor, /new, and /quit are handled locally and never sent to the
+provider. Type "/" and press Tab to autocomplete.
+.SH ENVIRONMENT
+.TP
+.B HI_API_KEY
+API key for the selected provider (overrides the config file).
+.TP
+.B HI_BASE_URL
+Provider endpoint, e.g. https://api.openai.com/v1.
+.TP
+.B HI_MODEL
+Model identifier.
+.TP
+.B HI_APPROVAL_MODE
+always, safe-only, or never.
 .SH FILES
 .IP ~/.config/hi/config.env
 Provider configuration. API keys are stored in the operating system credential store and a protected 0600 fallback file.
 .IP ~/.local/share/hi/sessions.db
 Local conversation database.
+.SH SEE ALSO
+The online documentation at <https://github.com/britonmearsty/hi>.

@@ -1,5 +1,5 @@
 use crate::{config, providers::Message};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use std::{
     fs,
@@ -9,9 +9,11 @@ use std::{
 fn open() -> Result<Connection> {
     let path = config::data_path();
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent)
+            .with_context(|| format!("could not create data directory {}", parent.display()))?;
     }
-    let db = Connection::open(path)?;
+    let db = Connection::open(&path)
+        .with_context(|| format!("could not open the session database at {}", path.display()))?;
     migrate(&db)?;
     Ok(db)
 }
@@ -84,7 +86,7 @@ pub fn set_title(id: &str, title: &str) -> Result<()> {
 }
 pub fn clear_messages(id: &str) -> Result<()> {
     open()?.execute(
-        "DELETE FROM messages WHERE session_id=?1 AND role != 'system'",
+        "DELETE FROM messages WHERE session_id=?1 AND json_extract(message, '$.role') != 'system'",
         [id],
     )?;
     Ok(())

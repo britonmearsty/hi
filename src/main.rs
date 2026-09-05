@@ -16,8 +16,20 @@ use clap_complete::generate;
 use crate::cli::{Cli, Command};
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
+    if let Err(error) = run().await {
+        crate::ui::report_cli_error(&error);
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<()> {
     let cli = Cli::parse();
+
+    if let Some(prompt) = cli.prompt {
+        config::ensure_configured()?;
+        return agent::run_headless(&prompt).await;
+    }
 
     match cli.command.unwrap_or(Command::Chat { session: None }) {
         Command::Chat { session } => {
