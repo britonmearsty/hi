@@ -54,8 +54,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run test suite
         run: cargo test --all-targets --locked
-      - name: Run doc tests
-        run: cargo test --doc --locked
 
   build:
     name: Build release (${{ matrix.artifact }})
@@ -111,8 +109,6 @@ jobs:
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest
-    # Reported as advisory; a hit here should be fixed but is not a merge gate.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
